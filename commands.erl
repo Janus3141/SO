@@ -4,7 +4,7 @@
 
 
 
-start_conn(Name,Sock) ->
+start_conn(Name,Updts) ->
     %% Pedir a los procesos de nombres que reserven el nombre
     %% Asi una nueva coneccion no podra tratar de reservar el
     %% mismo nombre
@@ -18,7 +18,7 @@ start_conn(Name,Sock) ->
     after 1000 ->
         %% Si ningun proceso reclama el nombre como tomado en
         %% 1 segundo, se hace efectiva la toma
-        players ! {take,Sock,Name},
+        players ! {take,Updts,Name},
         {pcmd,"OK"}
     end.
 
@@ -27,80 +27,62 @@ list_games(ID) ->
     %% Se pregunta por los juegos a todos los nodos
     [{games,Node} ! {get_games,self()} || Node <- Nodes],
     %% Obtenemos una lista de listas de juegos
-    [receive {games,List} -> List after 1000 end || _Node <- Nodes],
-    %% Se aplana la lista y se lleva a una sola string donde los GID
-    %% estan separados por '-'
-    To_send = string:join([(lists:append(List))], "-"),
-    {pcmd,lists:append(["OK ",ID," ",To_send])}.
+    Games = [receive GameList -> GameList after 1000 end || _Node <- Nodes],
+    %% Conversion a string de los GIDs obtenidos de todos los nodos
+    %% En la string final cada juego se separa por '-', y su GID se separa
+    %% de su estado con ','
+    To_send = string:join(Games,"-"),
+    {pcmd,"OK " ++ ID ++ " " ++ To_send}.
 
 
-new_game(ID,Sock) ->
-    Game = spawn(?MODULE,ttt_start,[Sock]),
+new_game(ID,Updts) ->
+    Game = spawn(tateti,ttt_phase1,[Updts]),
     games ! {new,self(),Game},
     receive
-        {games,ok,GameInfo} -> 
-            {pcmd,lists:append("OK ",ID," ",GameInfo)};
-        {games,error,Info} ->
-            {pcmd,lists:append("ERROR ",ID," ",Info)}
+        {ok,GameInfo} -> 
+            {pcmd, "OK " ++ ID ++ " " ++ GameInfo};
+        {error,Info} ->
+            {pcmd, "ERROR " ++ ID ++ " " ++ Info}
     end.
 
 
-access_game(ID,GameID,Sock) ->
-    case id_to_game(GameID) of
-        {ok,Pid,"nf"} ->
-            Pid ! {access,self(),Sock},
-            receive
-                {ok,GameInfo} ->
-                    {pcmd,lists:append("OK ",ID," ",GameInfo)};
-                {error,full} ->
-                    {pcmd,lists:append("ERROR ",ID," fullgame")}
-            end;
-        {ok,Pid,_} ->
-            {pcmd,lists:append("ERROR ",ID," invalid")};
-        error ->
-            {pcmd,lists:append("ERROR ",ID," invalid")}
+access_game(ID,GameID,Updts) ->
+    games ! {access,self(),GameID,Updts},
+    receive
+        {ok,GameInfo} ->
+            {pcmd, "OK " ++ ID ++ " " ++ GameInfo};
+        {error,R} ->
+            {pcmd, "ERROR " ++ ID ++ " " ++ R}
     end.
 
 
-play(ID,GameID,Play) ->
-    case id_to_game(GameID) of
-        {ok,Pid,_} ->
-            Pid ! {play,self(),Play},
-            receive
-                {ok,GameInfo} ->
-                    {pcmd,lists:append("OK ",ID," ",GameInfo)};
-                {error,Detail} ->
-                    {pcmd,lists:append("ERROR",ID," ",Detail)}
-            end;
-        error ->
-            {pcmd,lists:append("ERROR ",ID," invalid")}
+play(ID,GameID,Play,Updts) ->
+    games ! {play,self(),GameID,Play,Updts},
+    receive
+        ok ->
+            {pcmd, "OK " ++ ID};
+        {error,Detail} ->
+            {pcmd, "ERROR " ++ ID ++ " " ++ Detail}
     end.
 
 
-watch(ID,GameID,Socket) ->
-    case id_to_game(GameID) of
-        {ok,Pid,_} ->
-            Pid ! {watch,self(),Socket};
-            receive
-                {games,ok} ->
-                    {pcmd,lists:append("OK ",ID)};
-                {games,error,Detail} ->
-                    {pcmd,lists:append("ERROR ",ID," ",Detail)}
-            end;
-        error ->
-            {pcmd,lists:append("ERROR ",ID," invalid")}
+watch(ID,GameID,Updts) ->
+    games ! {watch,self(),GameID,Updts},
+    receive
+        {ok,GameInfo} ->
+            {pcmd, "OK " ++ ID ++ " " ++ GameInfo};
+        {games,error,Detail} ->
+            {pcmd, "ERROR " ++ ID ++ " " ++ Detail}
     end.
     
 
-unwatch(ID,GameID,Socket) ->
-    case id_to_game(GameID) of
-        {ok,Pid,_} ->
-            Pid ! {unwatch,self(),Socket};
-            receive
-                ok ->
-                    {pcmd,lists:append("OK ",ID)};
-        error ->
-            {pcmd,lists:append("ERROR ",ID," invalid")}
+unwatch(ID,GameID,Uptds) ->
+    games ! {unwatch,self(),GameID,Updts},
+    receive
+        ok ->
+            {pcmd, "OK " ++ ID};
+        {error,Detail} ->
+            {pcmd, "ERROR " ++ ID ++ " " ++ Detail}
     end.
 
 
