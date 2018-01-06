@@ -19,14 +19,15 @@ dispatcher(ListenSocket) ->
     case gen_tcp:accept(ListenSocket) of
         {ok,Sock} ->
             Updts = spawn(?MODULE,updts_sender,[Sock,1]),
-            controlling_process(Sock, spawn(?MODULE,psocket,[Sock,Updts]);
+            Control = spawn(commands,player_control,[[],[],Updts]);
+            controlling_process(Sock, spawn(?MODULE,psocket,[Sock,Updts,Control]);
         {error, Reason} ->
             io:format("tcp accept error: ~p~n",[Reason])
     end,
     dispatcher(ListenPort).
 
 
-psocket(Socket, Updts) ->
+psocket(Socket, Updts, Control) ->
     %% Primero se configura "active once", de lo contrario psocket
     %% podria inundarse de paquetes del cliente y reducir
     %% la eficiencia de receive
@@ -34,42 +35,40 @@ psocket(Socket, Updts) ->
     receive
         %% Mensajes del cliente. Se procesan en el nodo indicado por pbalance
         {tcp,Socket,Cmd} ->
-            pbalance ! {get_node, self()},
+            pbalance ! {qry, self()},
             receive
-                {pbalance,Node} -> spawn(Node, ?MODULE, pcommand, [Cmd,self(),Updts])
+                {ok,Node} -> spawn(Node, commands, pcommand, [Cmd,self(),Updts,Control])
             end;
         %% Contestaciones de pcommand
-        {pcmd, Msg} -> gen_tcp:send(Socket,Msg);
+        {pcmd, Msg} ->
+            gen_tcp:send(Socket,Msg);
+        stop ->
+            exit(normal);
         %% Si se recibio un mensaje no deseado
-        Err -> io:format("Unexpected '~p' in psocket~n",[Err])
+        Err ->
+            io:format("Unexpected '~p' in psocket~n",[Err])
     end,
-    psocket(Socket,Updts).
+    psocket(Socket, Updts, Control).
 
 
 updts_sender(Socket,ID) ->
     %% Mandar updt entrante
     receive
-        {updt,Msg} -> gen_tcp:send(Socket,"UPD " ++ ID ++ " " ++ Msg)
+        {updt,Msg} ->
+            gen_tcp:send(Socket,"UPD " ++ ID ++ " " ++ Msg);
+        stop ->
+            exit(normal)
     end,
     %% Esperar respuesta
     receive
-        {ok,ID} -> ok
+        {ok,ID} ->
+            ok;
+        stop ->
+            exit(normal)
     end,
     %% Loop
     updts_sender(Socket,ID+1).
 
-
-pcommand(Cmd,PSocket,Updts) ->
-    PSocket ! case string:tokens(Cmd, " ") of
-        ["CON",Name] -> commands:start_conn(Name,Updts);
-        ["LSG",ID] -> commands:list_games(ID);
-        ["NEW",ID] -> commands:new_game(ID,Updts);
-        ["ACC",ID,GID] -> commands:access_game(ID,GID,Updts);
-        ["PLA",ID,GID|Play] -> commands:play(ID,GID,Play,Updts);
-        ["OBS",ID,GID] -> commands:watch_game(ID,GID,Updts);
-        ["LEA",ID,GID] -> commands:unwatch_game(ID,GID,Updts);
-        ["OK",ID] -> Updts ! {ok,ID};
-        ["BYE"] ->
 
 
 
