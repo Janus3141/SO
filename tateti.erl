@@ -47,16 +47,16 @@ ttt_phase2(IdProcP1,NameP1,GID) ->
 %% Ayuda para recibir solo mensajes que sean watch y unwatch
 %% Se retorna la lista de los nuevos observadores y la de 
 %% los que dejan de observar
-watch_list(Wtcs,Out,Info) ->
+watch_list(Wtcs,Out,Info,GID) ->
     receive
         {watch,Ret,IdProc} ->
             Ret ! {ok,Info},
             IdProc ! {add,watch,GID},
-            watch_list([IdProc|Wtcs],Out,Info);
+            watch_list([IdProc|Wtcs],Out,Info,GID);
         {unwatch,Ret,IdProc} ->
             Ret ! {ok,""},
             IdProc ! {del,watch,GID},
-            watch_list(Wtcs,[IdProc|Out],Info)
+            watch_list(Wtcs,[IdProc|Out],Info,GID)
     after 0 ->
         {Wtcs,Out}
     end.
@@ -79,25 +79,28 @@ ttt_play(Table,[Play],T) ->
         %% Se devuelve el tablero con el N-esimo numero T
         lists:sublist(Table,N-1) ++ [T] ++ lists:nthtail(N,Table)
     catch
-        E:R -> if
-                Play =:= "LEAVE" -> leave;
-                true -> badargs
-               end
+        %% Error de list_to_integer
+        error:badarg -> if
+                         Play =:= "LEAVE" -> leave;
+                         true -> badargs
+                        end;
+        %% Error de lists:nth
+        error:function_clause -> badargs
     end.
 
 
 %% Chequea si la ultima jugada formo una linea de 3
 %% Si lo hizo devuelve win y la linea ganadora, si no ok
-ttt_test_table([A1,A2,A3,B1,B2,B3,C1,C2,C3],T) ->
+ttt_test_table([A1,A2,A3,B1,B2,B3,C1,C2,C3], T) ->
     if
-        A1 =:= T and A2 =:= T and A3 =:= T -> {win,[1,2,3]};
-        B1 =:= T and B2 =:= T and B3 =:= T -> {win,[4,5,6]};
-        C1 =:= T and C2 =:= T and C3 =:= T -> {win,[7,8,9]};
-        A1 =:= T and B1 =:= T and C1 =:= T -> {win,[1,3,7]};
-        A2 =:= T and B2 =:= T and C2 =:= T -> {win,[2,5,8]};
-        A3 =:= T and B3 =:= T and C3 =:= T -> {win,[3,6,9]};
-        A1 =:= T and B2 =:= T and C3 =:= T -> {win,[1,5,9]};
-        A3 =:= T and B2 =:= T and C1 =:= T -> {win,[3,5,7]};
+        (A1 =:= T) and (A2 =:= T) and (A3 =:= T) -> {win,[1,2,3]};
+        (B1 =:= T) and (B2 =:= T) and (B3 =:= T) -> {win,[4,5,6]};
+        (C1 =:= T) and (C2 =:= T) and (C3 =:= T) -> {win,[7,8,9]};
+        (A1 =:= T) and (B1 =:= T) and (C1 =:= T) -> {win,[1,3,7]};
+        (A2 =:= T) and (B2 =:= T) and (C2 =:= T) -> {win,[2,5,8]};
+        (A3 =:= T) and (B3 =:= T) and (C3 =:= T) -> {win,[3,6,9]};
+        (A1 =:= T) and (B2 =:= T) and (C3 =:= T) -> {win,[1,5,9]};
+        (A3 =:= T) and (B2 =:= T) and (C1 =:= T) -> {win,[3,5,7]};
         true -> ok
     end.
 
@@ -106,42 +109,43 @@ ttt_test_table([A1,A2,A3,B1,B2,B3,C1,C2,C3],T) ->
 ttt_phase3(IdProcs,Names,Table,Turn,Wtcs,GID,Count) ->
     OtherPlayer = (Turn rem 2) + 1,
     %% Recibir pedidos de (des)observacion
-    Info = string:join([Names, " "),
+    Info = string:join(Names, " "),
     {InWtcs,OutWtcs} = watch_list([],[],Info,GID),
     NewWtcs = InWtcs ++ (Wtcs -- OutWtcs),
     %% Mandar updt a todos
     TableStr = lists:append([integer_to_list(X) || X <- Table]),
-    Info1 = TableStr ++ " " ++ integer_to_list(Turn),
-    updt_bcast(string:join([GID,TableStr,integer_to_list(Turn)], " "),
-                lists:nth(Turn,IdProcs) ++ NewWtcs),
+    Info1 = GID ++ " " ++ TableStr ++ " " ++ integer_to_list(Turn),
+    updt_bcast(Info1, [lists:nth(Turn,IdProcs) | NewWtcs]),
     %% Recibir y realizar jugada
+    PlayerID = lists:nth(Turn,IdProcs),
     receive
-        {play,Ret,Play,lists:nth(Turn,IdProcs)} ->
+        {play,Ret,Play,PlayerID} ->
             case ttt_play(Table,Play,Turn) of
                 leave ->
                     %% El jugador se retira, se termina el juego
                     Ret ! {ok, GID ++ " LEFT"},
-                    Recs = [lists:nth(OtherPlayer,IdProcs) | NewWtcs],
-                    ttt_end(lists:nth(OtherPlayer,Names),Recs,GID,leave);
+                    ttt_end(OtherPlayer,IdProcs,NewWtcs,GID,leave);
                 badargs ->
                     %% Jugada invalida, se pierde el turno
-                    Ret ! {ok, GID ++ " INVALID"}
-                    ttt_phase3(IdProcs,Names,Table,OtherPlayer,NewWtcs,GID);
+                    Ret ! {ok, GID ++ " INVALID"},
+                    ttt_phase3(IdProcs,Names,Table,OtherPlayer,NewWtcs,GID,Count);
                 NewTable ->
                     Ret ! {ok, GID},
                     %% Comprobar tabla
-                    case ttt_test_table(NewTable) of
+                    case ttt_test_table(NewTable, Turn) of
                         ok ->
                             %% Si no hay mas casillas para rellenar, hay empate
                             case Count of
-                                9 -> ttt_end(false,IdProcs++NewWtcs,GID,draw);
-                                _ -> ttt_phase3(IdProcs,Names,NewTable,OtherPlayer,NewWtcs,GID,Count+1);
-                        {win,Hit} -> ttt_end(Turn,IdProcs++NewWtcs,GID,Hit)
+                                9 -> ttt_end(false,IdProcs,NewWtcs,GID,draw);
+                                _ -> ttt_phase3(IdProcs,Names,NewTable,OtherPlayer,NewWtcs,GID,Count+1)
+                            end;
+                        {win,Hit} -> ttt_end(Turn,IdProcs,NewWtcs,GID,Hit)
                     end
             end
     %% El jugador tiene 10 segundos para realizar la jugada
+    %% O pierde el turno
     after 10000 ->
-        ttt_end(lists:nth(OtherPlayer,Names), IdProcs++NewWtcs, GID, timeout)
+        ttt_phase3(IdProcs,Names,Table,OtherPlayer,NewWtcs,GID,Count)
     end.
 
 
@@ -153,16 +157,17 @@ ttt_end(WinnerN, Players, Wtcs, GID, Reason) ->
     [Player ! {del,play,GID} || Player <- Players],
     [Watcher ! {del,watch,GID} || Watcher <- Wtcs],
     InfRecs = Players ++ Wtcs,
+    WinnerS = integer_to_list(WinnerN),
     case Reason of
         draw ->
             updt_bcast(GID ++ " END DRAW", InfRecs);
         leave ->
-            updt_bcast(GID ++ " END " ++  WinnerN ++ " GAMELEFT", InfRecs);
+            updt_bcast(GID ++ " END " ++  WinnerS ++ " GAMELEFT", InfRecs);
         timeout ->
-            updt_bcast(GID ++ " END " ++  WinnerN ++ " TIMEOUT", InfRecs);
+            updt_bcast(GID ++ " END " ++  WinnerS ++ " TIMEOUT", InfRecs);
         Hit ->
-            HitS = lists:append([integer_to_list(X) || X <- Hit])
-            updt_bcast(GID ++ " END " ++  WinnerN ++ " " ++ HitS, InfRecs)
+            HitS = lists:append([integer_to_list(X) || X <- Hit]),
+            updt_bcast(GID ++ " END " ++  WinnerS ++ " " ++ HitS, InfRecs)
     end.
 
 

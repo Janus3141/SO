@@ -25,7 +25,7 @@ balance({MinNode,MinLoad}, Nodes) ->
             case lists:keymember(Node,1,Nodes) of
                 false -> monitor_node(Node,true);
                 true -> ok
-            end
+            end,
             %% Actualizar la informacion de carga de Node y
             %% seleccionar el nodo con carga minima
             if
@@ -42,7 +42,7 @@ balance({MinNode,MinLoad}, Nodes) ->
             NewList = lists:keydelete(Node,1,Nodes),
             if
                 Node =:= MinNode ->
-                    [NewMin|Tail] = lists:keysort(2,NewList),
+                    [NewMin|_] = lists:keysort(2,NewList),
                     balance(NewMin,NewList);
                 true ->
                     balance({MinNode,MinLoad},NewList)
@@ -63,7 +63,7 @@ pstat() ->
     AllNodes = [node() | nodes()],
     [{pbalance, Node} ! {updt, node(), Load} || Node <- AllNodes],
     %% Esperar y seguir
-    timer:wait(1000),
+    timer:sleep(1000),
     pstat().
 
 
@@ -90,7 +90,7 @@ players_names(List) ->
             Nodes = nodes(),
             [{players,Node} ! {qry,Name,self()} || Node <- Nodes],
             %% Despues se reciben las contestaciones
-            case names_query(Nodes) of
+            case name_query(Nodes) of
                 ok ->
                     Ret ! ok,
                     players_names([{IdProc,Name}|List]);
@@ -135,11 +135,12 @@ players_names(List) ->
 
 games_names(List) ->
     receive
-        %% Devuelve la lista del juegos en el nodo
         {get_games,Ret} ->
-            Ret ! [GID ++ "," ++ atom_to_list(St) || {GID,St} <- List];
-        %% Agrega un nuevo juego a la lista
+            %% Devuelve la lista del juegos en el nodo
+            GameS = [GID ++ "," ++ atom_to_list(St) || {GID,St} <- List],
+            Ret ! {node(),GameS};
         {new,Ret,Game} ->
+            %% Agrega un nuevo juego a la lista
             case game_to_id(Game) of
                 {ok, GID} ->
                     Game ! {get_dets,GID},
@@ -154,31 +155,37 @@ games_names(List) ->
                     Game ! error,
                     Ret ! {error,Info}
             end;
-        %% Cambia estado St
         {cstate,GID,St} ->
+            %% Cambia estado St
             NewList = lists:keyreplace(GID,1,List,{GID,St}),
             games_names(NewList);
-        %% Elimina el juego de la lista
         {del,GID} ->
+            %% Elimina el juego de la lista
             games_names(lists:keydelete(GID,1,List));
-        %% Redirecciona mensaje al juego para que el cliente acceda
-        %% a jugar, si la partida no esta llena
         {gcom,access,Ret,PidS,IdProc} ->
+            %% Redirecciona mensaje al juego para que el cliente acceda
+            %% a jugar, si la partida no esta llena
             try
                 Pid = list_to_pid(PidS),
-                case lists:keyfind(game_to_id(Pid),1,List) of
-                    {_,notfull} ->
-                        Pid ! {access,Ret,IdProc};
-                    {_,full} ->
-                        Ret ! {error,"FULL"};
-                    false ->
-                        Ret ! {error,"INVALID GID"}
+                case game_to_id(Pid) of
+                    {ok,GID} ->
+                         case lists:keyfind(GID,1,List) of
+                            {_,notfull} ->
+                                Pid ! {access,Ret,IdProc};
+                            {_,full} ->
+                                Ret ! {error,"FULL"};
+                            false ->
+                                Ret ! {error,"INVALIDD GID"}
+                        end;
+                    {error,Info} ->
+                        Ret ! {error,Info},
+                        games_names(List)
                 end
             catch
-                error:_ -> Ret ! {error, "INVALID GID"}
+                error:_ -> Ret ! {error, "INVALIDDD GID"}
             end
     end,
-    games_manager(List).
+    games_names(List).
 
 
 
@@ -211,21 +218,21 @@ games_msgs() ->
         {play,Ret,GID,Play,IdProc} ->
             case id_to_game(GID) of
                 {ok,PidS,Node} -> 
-                    {games_msgs,Node} ! {gcom,play,Ret,PidS,Play,IdProc};
+                    {gmsg,Node} ! {gcom,play,Ret,PidS,Play,IdProc};
                 error ->
                     Ret ! {error, "INVALID GID"}
             end;
         {access,Ret,GID,IdProc} ->
             case id_to_game(GID) of
                 {ok,PidS,Node} ->
-                    {games,Node} ! {gcom,access,Ret,PidS,Play,IdProc};
+                    {games,Node} ! {gcom,access,Ret,PidS,IdProc};
                 error ->
-                    Ret ! {error,"INVALID GID"}
+                    Ret ! {error,"INVALID GGID"}
             end;
         {Other,Ret,GID,IdProc} ->
             case id_to_game(GID) of
                 {ok,PidS,Node} -> 
-                    {games_msgs,Node} ! {gcom,Other,Ret,PidS,IdProc};
+                    {gmsg,Node} ! {gcom,Other,Ret,PidS,IdProc};
                 error ->
                     Ret ! {error, "INVALID GID"}
             end
@@ -285,7 +292,7 @@ name_by_psock2(Nodes) ->
         {error,Node} -> name_by_psock2(lists:delete(Node,Nodes))
     after 1000 ->
         %% Uno o varios nodos no contestan, se verifica conectividad
-        [Node|Nodes2] -> Nodes,
+        [Node|Nodes2] = Nodes,
         case lists:member(Node, [node() | nodes()]) of
             %% Node aun esta conectado, se vuelve a probar
             true -> name_by_psock2(Nodes);

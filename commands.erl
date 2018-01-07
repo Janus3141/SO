@@ -3,60 +3,69 @@
 -compile(export_all).
 
 
+
 pcommand(Cmd, PSocket, Updts, Control) ->
-    {Res,Msg} = case string:tokens(Cmd, " ") of
+    {Res,Msg,CID} = case string:tokens(Cmd, " ") of
                     ["CON",ID,Name] ->
-                        gpp ! {register,Control,self()},
+                        players ! {add,Control,Name,self()},
                         receive
-                            {error,Msg} -> {error,Msg};
-                            ok ->
-                                players ! {add,Control,Name,self()},
-                                receive
-                                    ok -> {ok,""};
-                                    {error,Msg} -> {error,Msg}
-                                end
+                            ok -> {ok,"",ID};
+                            {error,Reason} -> {error,Reason,ID}
                         end;
                     ["LSG",ID] ->
+                        Nodes = [node() | nodes()],
                         %% Se pregunta por los juegos a todos los nodos
                         [{games,Node} ! {get_games,self()} || Node <- Nodes],
                         %% Obtenemos una lista de listas de juegos
-                        Games = [receive GameList -> GameList after 1000 end || _Node <- Nodes],
+                        Games = receive_games(Nodes,[]),
                         %% Conversion a string de los GIDs obtenidos de todos los nodos
-                        %% En la string final cada juego se separa por '-', y su GID se separa
-                        %% de su estado con ','
+                        %% En la string final cada juego se separa por '-',
+                        %% y su GID se separa de su estado con ','
                         To_send = string:join(Games,"-"),
-                        {ok,To_send};
+                        {ok,To_send,ID};
                     ["NEW",ID] ->
                         Game = spawn(tateti,ttt_phase1,[Control]),
                         games ! {new,self(),Game},
                         receive
-                            {Answer,Info} -> {Answer,Info}
+                            {Answer,Info} -> {Answer,Info,ID}
                         end;
                     ["ACC",ID,GID] ->
-                        gmsg ! {access,self(),GameID,Control},
-                        answer(GameID);
+                        gmsg ! {access,self(),GID,Control},
+                        {Resp,Msge} = answer(GID),
+                        {Resp,Msge,ID};
                     ["PLA",ID,GID|Play] ->
                         gmsg ! {play,self(),GID,Play,Control},
-                        answer(GID);
+                        {Resp,Msge} = answer(GID),
+                        {Resp,Msge,ID};
                     ["OBS",ID,GID] -> 
-                        gmsg ! {watch,self(),GameID,Control},
-                        answer(GameID);
+                        gmsg ! {watch,self(),GID,Control},
+                        {Resp,Msge} = answer(GID),
+                        {Resp,Msge,ID};
                     ["LEA",ID,GID] -> 
-                        gmsg ! {unwatch,self(),GameID,Control},
-                        answer(GameID);
+                        gmsg ! {unwatch,self(),GID,Control},
+                        {Resp,Msge} = answer(GID),
+                        {Resp,Msge,ID};
                     ["OK",ID] ->
-                        Updts ! {ok,ID};
+                        Updts ! {ok,ID},
+                        exit(normal);
                     ["BYE"] ->
-                        Playing = Control ! {qry,play,self()},
-                        Watching = Control ! {qry,watch,self()},
-                        [gmsg ! {play,self(),GID,"LEAVE",Control} || GID <- Playing],
-                        [gmsg ! {unwatch,self(),GameID,Control} || GID <- Watching],
+                        Control ! {qry,play,self()},
+                        receive
+                            Playing -> Playing
+                        end,
+                        Control ! {qry,watch,self()},
+                        receive
+                            Watching -> Watching
+                        end,
+                        [gmsg ! {play,self(),GID,["LEAVE"],Control} || GID <- Playing],
+                        [gmsg ! {unwatch,self(),GID,Control} || GID <- Watching],
                         [Service ! stop || Service <- [PSocket,Updts,Control]],
-                        exit(normal)
+                        exit(normal);
+                    _ -> {error,"INVALID COMMAND","-1"}
                 end,
     case Res of
-        ok -> PSocket ! {pcmd, "OK " ++ ID ++ " " ++ Msg};
-        error -> PSocket ! {pcmd, "ERROR " ++ ID ++ " " ++ Msg}
+        ok -> PSocket ! {pcmd, "OK " ++ CID ++ " " ++ Msg};
+        error -> PSocket ! {pcmd, "ERROR " ++ CID ++ " " ++ Msg}
     end.
 
 
@@ -80,6 +89,27 @@ answer(GID) ->
         end
     end.
 
+
+
+receive_games([], Games) -> Games;
+receive_games(Nodes, Games) ->
+    receive
+        {Node, GList} ->
+            receive_games(lists:delete(Node,Nodes),GList++Games)
+    after 1000 ->
+        %% Si no se reciben todas las respuestas, se controla
+        %% que los nodos sigan conectados
+        [Node | Nodes2] = Nodes,
+        case lists:member(Node, [node() | nodes()]) of
+            %% El nodo no esta conectado. Lo ignoramos
+            %% y seguimos con los que quedan
+            false ->
+                receive_games(Nodes2,Games);
+            %% El nodo esta conectado, seguimos tratando
+            true ->
+                receive_games(Nodes,Games)
+        end
+    end.
 
 
 
