@@ -6,40 +6,44 @@
 %% Creacion de la partida. Responde a games con el nombre del
 %% jugador que la creo y se sigue con phase 2
 ttt_phase1(IdProcP1) ->
-    case services:name_by_psock(IdProcP1) of
-        {ok,NameP1} ->
+    IdProcP1 ! {qry,name,self()},
+    receive
+        {ok, NameP1} ->
             receive
-                {get_dets,GID} ->
-                    IdProcP1 ! {add,play,GID},
-                    games ! {ok,NameP1},
+                {get_dets, GID} ->
+                    IdProcP1 ! {add, play, GID},
+                    games ! {ok, NameP1},
                     ttt_phase2(IdProcP1,NameP1,GID);
-                error -> error
+                error ->
+                    error
             end;
-        {error,R} ->
-            games ! {error,R}
+        {error, Msg} ->
+            games ! {error, Msg}
     end.
 
 
 %% Espera a que un jugador acceda a la partida creada
 %% Si todo va bien se entra en el juego (phase 3)
-%% Si el jugador que responde no esta en la lista,
-%% se vuelve a esperar a otro jugador, y se rechaza al primero
-ttt_phase2(IdProcP1,NameP1,GID) ->
+%% Si el jugador que responde no tiene nombre,
+%% se lo rechaza y se vuelve a esperar a otro jugador
+ttt_phase2(IdProcP1, NameP1, GID) ->
     receive
-       {access,Ret,IdProcP2} ->
-            case services:name_by_psock(IdProcP2) of
-                {ok,NameP2} ->
-                    IdProcP2 ! {add,play,GID},
-                    Ret ! {ok, NameP1 ++ " " ++ NameP2},
-                    IdProcP1 ! {updt, GID ++ " ACCEPTED " ++ NameP2},
-                    games ! {cstate,GID,full},
-                    Tab = [0,0,0,0,0,0,0,0,0], % Tablero de juego vacio
+       {access, Ret, IdProcP2} ->
+            IdProcP2 ! {qry, name, self()},
+            receive
+                {ok, NameP2} ->
+                    IdProcP2 ! {add, play, GID},
                     Turn = random:uniform(2), % Primer turno
-                    ttt_phase3([IdProcP1,IdProcP2],[NameP1,NameP2],
+                    TurnS = integer_to_list(Turn),
+                    Ret ! {ok, NameP1 ++ " " ++ NameP2 ++ " " ++ TurnS},
+                    IdProcP1 ! {updt, GID ++ " ACCEPTED " ++ NameP2 ++ " " ++ TurnS},
+                    games ! {cstate, GID, full},
+                    Tab = [0,0,0,0,0,0,0,0,0], % Tablero de juego vacio
+                    ttt_phase3([IdProcP1, IdProcP2], [NameP1, NameP2],
                                Tab, Turn, [], GID, 1);
-                {error,R} ->
-                    Ret ! {error,R},
-                    ttt_phase2(IdProcP1,NameP1,GID)
+                {error, Msg} ->
+                    Ret ! {error, Msg},
+                    ttt_phase2(IdProcP1, NameP1, GID)
             end
     end.
 
@@ -47,45 +51,46 @@ ttt_phase2(IdProcP1,NameP1,GID) ->
 %% Ayuda para recibir solo mensajes que sean watch y unwatch
 %% Se retorna la lista de los nuevos observadores y la de 
 %% los que dejan de observar
-watch_list(Wtcs,Out,Info,GID) ->
+watch_list(Wtcs, Out, Info, GID) ->
     receive
-        {watch,Ret,IdProc} ->
-            Ret ! {ok,Info},
-            IdProc ! {add,watch,GID},
-            watch_list([IdProc|Wtcs],Out,Info,GID);
-        {unwatch,Ret,IdProc} ->
+        {watch, Ret, IdProc} ->
+            Ret ! {ok, Info},
+            IdProc ! {add, watch, GID},
+            watch_list([IdProc|Wtcs], Out, Info, GID);
+        {unwatch, Ret, IdProc} ->
             Ret ! {ok,""},
             IdProc ! {del,watch,GID},
-            watch_list(Wtcs,[IdProc|Out],Info,GID)
+            watch_list(Wtcs, [IdProc|Out], Info, GID)
     after 0 ->
-        {Wtcs,Out}
+        {Wtcs, Out}
     end.
 
 
 %% Broadcast de Msg para todo elemento en Receivers
-updt_bcast(Msg,Receivers) ->
+updt_bcast(Msg, Receivers) ->
     [Client ! {updt,Msg} || Client <- Receivers].
 
 
 %% Realiza la jugada argumento en Table y devuelve el nuevo estado
 %% del tablero, si la jugada no es "LEAVE", y si es valida
-ttt_play(Table,[Play],T) ->
+ttt_play(Table, [Play], T) ->
     try
         %% Asegurarse que la jugada sea un numero
         N = list_to_integer(Play),
         %% Verificar que los numeros son correctos, y que el lugar no
         %% fue jugado antes
-        0 = lists:nth(N,Table),
+        0 = lists:nth(N, Table),
         %% Se devuelve el tablero con el N-esimo numero T
-        lists:sublist(Table,N-1) ++ [T] ++ lists:nthtail(N,Table)
+        lists:sublist(Table, N-1) ++ [T] ++ lists:nthtail(N, Table)
     catch
         %% Error de list_to_integer
         error:badarg -> if
                          Play =:= "LEAVE" -> leave;
                          true -> badargs
                         end;
-        %% Error de lists:nth
-        error:function_clause -> badargs
+        %% Errores de lists:nth
+        error:function_clause -> badargs;
+        error:{badmatch,_} -> badargs
     end.
 
 
@@ -124,10 +129,10 @@ ttt_phase3(IdProcs,Names,Table,Turn,Wtcs,GID,Count) ->
                 leave ->
                     %% El jugador se retira, se termina el juego
                     Ret ! {ok, GID ++ " LEFT"},
-                    ttt_end(OtherPlayer,IdProcs,NewWtcs,GID,leave);
+                    ttt_end(OtherPlayer, [lists:nth(OtherPlayer,IdProcs)], NewWtcs, GID, leave);
                 badargs ->
                     %% Jugada invalida, se pierde el turno
-                    Ret ! {ok, GID ++ " INVALID"},
+                    Ret ! {error, GID ++ " INVALID"},
                     ttt_phase3(IdProcs,Names,Table,OtherPlayer,NewWtcs,GID,Count);
                 NewTable ->
                     Ret ! {ok, GID},
@@ -142,10 +147,6 @@ ttt_phase3(IdProcs,Names,Table,Turn,Wtcs,GID,Count) ->
                         {win,Hit} -> ttt_end(Turn,IdProcs,NewWtcs,GID,Hit)
                     end
             end
-    %% El jugador tiene 10 segundos para realizar la jugada
-    %% O pierde el turno
-    after 10000 ->
-        ttt_phase3(IdProcs,Names,Table,OtherPlayer,NewWtcs,GID,Count)
     end.
 
 
@@ -157,14 +158,15 @@ ttt_end(WinnerN, Players, Wtcs, GID, Reason) ->
     [Player ! {del,play,GID} || Player <- Players],
     [Watcher ! {del,watch,GID} || Watcher <- Wtcs],
     InfRecs = Players ++ Wtcs,
-    WinnerS = integer_to_list(WinnerN),
+    case WinnerN of
+        false -> WinnerS = "";
+        _ -> WinnerS = integer_to_list(WinnerN)
+    end,
     case Reason of
         draw ->
             updt_bcast(GID ++ " END DRAW", InfRecs);
         leave ->
             updt_bcast(GID ++ " END " ++  WinnerS ++ " GAMELEFT", InfRecs);
-        timeout ->
-            updt_bcast(GID ++ " END " ++  WinnerS ++ " TIMEOUT", InfRecs);
         Hit ->
             HitS = lists:append([integer_to_list(X) || X <- Hit]),
             updt_bcast(GID ++ " END " ++  WinnerS ++ " " ++ HitS, InfRecs)

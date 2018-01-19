@@ -4,10 +4,35 @@
 
 
 
+start_server(Port, Node) ->
+    case Node of
+        false -> ok;
+        _ -> case net_kernel:connect(Node) of
+                true ->
+                    ok;
+                false ->
+                    io:format("Error connecting to ~p~n",[Node]),
+                    exit(error);
+                ignored ->
+                    io:format("Local node not alive")
+             end
+    end,
+    Players = spawn(services, players_names, [[]]),
+    register(players, Players),
+    Games = spawn(services, games_names, [[]]),
+    register(games, Games),
+    Gmsgs = spawn(services, games_msgs, []),
+    register(gmsg, Gmsgs),
+    Pbalance = spawn(services, balance, [{node(), 0},[{node(), 0}]]),
+    register(pbalance, Pbalance),
+    spawn(services, pstat, []),
+    start_listen(Port).
+
+
 
 start_listen(Port) ->
     %% Creacion de un socket para escuchar
-    case gen_tcp:listen(Port, [list,inet,{active,false}]) of
+    case gen_tcp:listen(Port, [list,inet,{active,false},{nodelay,true}]) of
         {ok,Socket} ->
             dispatcher(Socket);
         {error, Reason} ->
@@ -22,7 +47,7 @@ dispatcher(ListenSocket) ->
     case gen_tcp:accept(ListenSocket) of
         {ok,Sock} ->
             Updts = spawn(?MODULE,updts_sender,[Sock,1]),
-            Control = spawn(commands,player_control,[[],[],Updts]),
+            Control = spawn(commands,player_control,[[],[],Updts,undefined]),
             gen_tcp:controlling_process(Sock, spawn(?MODULE,psocket,[Sock,Updts,Control]));
         {error, Reason} ->
             io:format("tcp accept error: ~p~n",[Reason])
@@ -45,7 +70,7 @@ psocket(Socket, Updts, Control) ->
             end;
         %% Contestaciones de pcommand
         {pcmd, Msg} ->
-            gen_tcp:send(Socket,Msg);
+            gen_tcp:send(Socket, Msg ++ ";");
         %% Se cerro la conexion o el cliente se va
         {tcp_closed,Socket} ->
             spawn(commands, pcommand, ["BYE",self(),Updts,Control]);
@@ -61,7 +86,7 @@ updts_sender(Socket,ID) ->
     %% Mandar updt entrante
     receive
         {updt,Msg} ->
-            gen_tcp:send(Socket,"UPD " ++ IDS ++ " " ++ Msg);
+            gen_tcp:send(Socket,"UPD " ++ IDS ++ " " ++ Msg ++ ";");
         stop ->
             exit(normal)
     end,

@@ -71,19 +71,18 @@ pstat() ->
 
 %%% NOMBRE REGISTRADO: players
 %% Servicio que mantiene los nombres de los jugadores conectados al nodo
-%% Para hacerlo se utiliza el argumento List, que es de la forma
-%% [{IdProc,Name}]
 
 players_names(List) ->
     receive
-        %% Agregar la tupla {IdProc,Name} a la lista de jugadores
-        {add,IdProc,Name,Ret} ->
+        %% Agregar Name a la lista de jugadores
+        {add,Name,Ret} ->
             %% Asegurarse que el nombre no esta registrado en este nodo
-            case lists:keyfind(Name,2,List) of
-                {_,Name} ->
+            case lists:member(Name,List) of
+                true ->
                     Ret ! {error,"NAME TAKEN"},
                     players_names(List);
-                false -> ok
+                false ->
+                    ok
             end,
             %% Asegurarse que el nombre no este registrado en otro nodo
             %% Primero se pregunta a todos los nodos
@@ -93,7 +92,7 @@ players_names(List) ->
             case name_query(Nodes) of
                 ok ->
                     Ret ! ok,
-                    players_names([{IdProc,Name}|List]);
+                    players_names([Name|List]);
                 taken ->
                     Ret ! {error,"NAME TAKEN"};
                 %% Hay un error si un nodo esta conectado pero no
@@ -101,26 +100,17 @@ players_names(List) ->
                 %% a intentar luego de un backoff
                 error ->
                     timer:sleep(rand:uniform(1000)),
-                    self() ! {add,IdProc,Name,Ret}
+                    self() ! {add,Name,Ret}
             end;
-        %% Pedido de otro nombre para verificar que Name no esta en List
+        %% Pedido de otro nodo para verificar que Name no esta en List
         {qry,Name,Ret} ->
-            case lists:keyfind(Name,2,List) of
-                {_,Name} -> Ret ! taken;
+            case lists:member(Name,List) of
+                true -> Ret ! taken;
                 false -> Ret ! {ok,node()}
             end;
-        %% Borrado de Name de List
+        %% Borrado del registro asociado a IdProc
         {del,Name} ->
-            players_names(lists:keydelete(Name,2,List));
-        %% Al recibir get_name simplemente se devuelve, si esta, el
-        %% nombre asociado con el socket argumento
-        {get_name,IdProc,Ret} ->
-            case lists:keyfind(IdProc,1,List) of
-                {IdProc,Name} ->
-                    Ret ! {ok,Name,IdProc};
-                false ->
-                    Ret ! {error,node()}
-            end
+            players_names(lists:delete(Name,List))
     end,
     players_names(List).
 
@@ -146,7 +136,7 @@ games_names(List) ->
                     Game ! {get_dets,GID},
                     receive
                         {ok,GameInfo} ->
-                            Ret ! {ok, GID++" "++GameInfo},
+                            Ret ! {ok, GID ++ " " ++ GameInfo},
                             games_names([{GID,notfull}|List]);
                         {error,Info} ->
                             Ret ! {error,Info}
@@ -175,14 +165,14 @@ games_names(List) ->
                             {_,full} ->
                                 Ret ! {error,"FULL"};
                             false ->
-                                Ret ! {error,"INVALIDD GID"}
+                                Ret ! {error,"INVALID GID"}
                         end;
                     {error,Info} ->
                         Ret ! {error,Info},
                         games_names(List)
                 end
             catch
-                error:_ -> Ret ! {error, "INVALIDDD GID"}
+                error:_ -> Ret ! {error, "INVALID GID"}
             end
     end,
     games_names(List).
@@ -227,7 +217,7 @@ games_msgs() ->
                 {ok,PidS,Node} ->
                     {games,Node} ! {gcom,access,Ret,PidS,IdProc};
                 error ->
-                    Ret ! {error,"INVALID GGID"}
+                    Ret ! {error,"INVALID GID"}
             end;
         {Other,Ret,GID,IdProc} ->
             case id_to_game(GID) of
@@ -272,36 +262,6 @@ name_query(Nodes) ->
             false -> name_query(Nodes2)
         end
     end.
-
-
-
-%% Pregunta a todos los servicios players cual es el nombre del
-%% jugador identificado por el proceso IdProc
-name_by_psock(IdProc) ->
-    Nodes = [node()|nodes()],
-    [{players,Node} ! {get_name,IdProc,self()} || Node <- Nodes],
-    name_by_psock2(Nodes).
-
-name_by_psock2([]) -> {error,"NOT FOUND"};
-name_by_psock2(Nodes) ->
-    receive
-        %% Se encuentra el nombre y se devuelve
-        {ok,Name,_} -> {ok,Name};
-        %% El nombre no estaba registrado en Node, se continua
-        %% con los otros nodos
-        {error,Node} -> name_by_psock2(lists:delete(Node,Nodes))
-    after 1000 ->
-        %% Uno o varios nodos no contestan, se verifica conectividad
-        [Node|Nodes2] = Nodes,
-        case lists:member(Node, [node() | nodes()]) of
-            %% Node aun esta conectado, se vuelve a probar
-            true -> name_by_psock2(Nodes);
-            %% Node no esta conectado, se sigue probando con
-            %% los nodos que quedan en la lista
-            false -> name_by_psock2(Nodes2)
-        end
-    end.
-
 
 
 %% Permite verificar que el nodo que hostea la partida

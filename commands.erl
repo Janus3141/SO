@@ -7,7 +7,7 @@
 pcommand(Cmd, PSocket, Updts, Control) ->
     {Res,Msg,CID} = case string:tokens(Cmd, " ") of
                     ["CON",ID,Name] ->
-                        players ! {add,Control,Name,self()},
+                        Control ! {add,Name,self()},
                         receive
                             ok -> {ok,"",ID};
                             {error,Reason} -> {error,Reason,ID}
@@ -59,6 +59,13 @@ pcommand(Cmd, PSocket, Updts, Control) ->
                         end,
                         [gmsg ! {play,self(),GID,["LEAVE"],Control} || GID <- Playing],
                         [gmsg ! {unwatch,self(),GID,Control} || GID <- Watching],
+                        Control ! {qry,name,self()},
+                        receive
+                            {ok,Name} ->
+                                players ! {del,Name};
+                            {error,_} ->
+                                ok
+                        end,
                         [Service ! stop || Service <- [PSocket,Updts,Control]],
                         exit(normal);
                     _ -> {error,"INVALID COMMAND","-1"}
@@ -114,28 +121,50 @@ receive_games(Nodes, Games) ->
 
 
 %% Lleva las listas de los juegos jugados y observados por el
-%% cliente, redirige los mensajes de update al proceso que
-%% se encarga de mandarlos, y sirve como identificador para
-%% el cliente (se lo asocia con el nombre elegido)
+%% cliente, conoce su nombre registrado, redirige los mensajes
+%% de update al proceso que se encarga de mandarlos, y sirve
+%% como identificador para el cliente (se lo asocia con el
+%% nombre elegido)
 
-player_control(Playing,Watching,Updts) ->
+player_control(Playing, Watching, Updts, Name) ->
     receive
         {updt,Msg} ->
             Updts ! {updt,Msg};
         {add,play,GID} ->
-            player_control([GID|Playing], Watching, Updts);
+            player_control([GID|Playing], Watching, Updts, Name);
         {add,watch,GID} ->
-            player_control(Playing, [GID|Watching], Updts);
+            player_control(Playing, [GID|Watching], Updts, Name);
         {del,play,GID} ->
-            player_control(lists:delete(GID,Playing), Watching, Updts);
+            player_control(lists:delete(GID,Playing), Watching, Updts, Name);
         {del,watch,GID} ->
-            player_control(Playing, lists:delete(GID,Watching), Updts);
+            player_control(Playing, lists:delete(GID,Watching), Updts, Name);
         {qry,play,Ret} ->
             Ret ! Playing;
         {qry,watch,Ret} ->
             Ret ! Watching;
+        {add,NewName,Ret} ->
+            case Name of
+                undefined ->
+                    players ! {add,NewName,self()},
+                    receive
+                        ok ->
+                            Ret ! ok,
+                            player_control(Playing, Watching, Updts, NewName);
+                        {error,Msg} ->
+                            Ret ! {error,Msg}
+                    end;
+                _ ->
+                    Ret ! {error, "KNOWN NAME " ++ Name}
+            end;
+        {qry,name,Ret} ->
+            case Name of
+                undefined ->
+                    Ret ! {error, "NO NAME"};
+                _ -> 
+                    Ret ! {ok,Name}
+            end;
         stop ->
             exit(normal)
     end,
-    player_control(Playing, Watching, Updts).
+    player_control(Playing, Watching, Updts, Name).
 
