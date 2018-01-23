@@ -1,0 +1,187 @@
+
+%%% Informe TP final de SO1
+
+
+\documentclass[a4paper]{report}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{float}
+\renewcommand{\baselinestretch}{1}
+\usepackage[margin=2cm]{geometry}
+\usepackage{amssymb}
+\usepackage{fancyhdr}
+\usepackage[utf8]{inputenc}
+\renewcommand{\familydefault}{\sfdefault}
+\pagestyle{fancy}
+\lhead{Trabajo pr\'actico final}
+\rhead{Bruno Sotelo}
+
+\newcommand{\femph}[1]{\textbf{\textit{#1}}}
+
+\setlength{\parindent}{0in}
+
+\begin{document}
+
+
+\begin{titlepage}
+\centering
+\begin{figure}[H]
+    \begin{center}
+        \includegraphics[width=2cm,height=2cm]{UNR_logo.jpg}
+    \end{center}
+\end{figure}
+{\scshape\large Facultad de Ciencias Exactas, Ingenier\'ia y Agrimensura\\*
+                 Licenciatura en Ciencias de la Computaci\'on\par}
+\vspace{5cm}
+{\scshape\LARGE Sistemas Operativos 1 \par}
+{\huge\bfseries Trabajo Pr\'actico Final \par}
+\vspace{3cm}
+{\Large Sotelo, Bruno\par}
+\vfill
+{\large 05 / 07 / 1096 \par}
+\end{titlepage}
+
+
+\section*{Explicación en general del servidor}
+
+El servidor de juegos fue implementado en 4 archivos:
+\begin{description}
+	\item[interface] Donde se encuentran las funciones que manejan
+		las conexiones tcp del servidor, como \textit{psocket}, 
+		\textit{updts\_sender} y \textit{dispatcher}.
+	\item[commands] En el cual se encuentran \textit{pcommand} y 
+		\textit{player\_control}.
+	\item[services] Con funciones que actuaran como servicios
+		del servidor, por ejemplo \textit{games\_names} posee información
+		de todas las partidas en el servidor. Otras funciones importantes
+		son \textit{balance, pstat, players\_names} y \textit{games\_msgs}.
+	\item[tateti] En donde se implementa el juego de Ta-te-ti en sí, el
+		cual se divide en cuatro fases.
+\end{description}
+\subsection*{interface.erl}
+Para ejecutar el servidor se utiliza 
+\femph{start\_server(Port,Node)}, donde \textit{Port} es el puerto
+en el cual estará escuchando el servidor y \textit{Node} es otro nodo
+de Erlang que esté ejecutando este c\'odigo, con el cual se
+conectará para formar un servicio distribuido; si no existe otro nodo o no se
+desea formar un cluster, se puede utilizar el átomo \textit{false} en este
+argumento. Esta función, además de conectar a un cluster de nodos, comenzará
+los servicios que usará el servidor (funciones de \textit{services.erl}), y 
+los registrará con un átomo. Luego llamará a
+\femph{start\_listen} para comenzar a escuchar en el puerto dado.\\
+La función \femph{dispatcher}, como fue indicado, acepta nuevas conexiones y
+crea un \femph{psocket} para cada cliente, el cual recibe todos sus 
+mensajes, además de contestar a los comandos (con OK o ERROR). Para enviar
+las actualizaciones de una partida se utiliza \femph{updts\_sender}, cada
+mensaje se envía sólo si el anterior ya fue contestado por el cliente.
+
+\subsection*{commands.erl}
+Cada comando recibido es procesado por \femph{pcommand}. En varios
+comandos el trabajo es simplemente enviar un mensaje a algún servicio y 
+esperar la respuesta. En \textit{commands.erl} también encontramos a 
+\femph{player\_control}, una función que será ejecutada por un proceso por
+cada cliente que haya en el servidor. Esta función mantiene dos listas para
+las partidas que el cliente está jugando y observando, una para cada caso.
+También mantiene el nombre que el cliente registró (o el átomo 
+\textit{undefined} si no lo hizo), y se encarga de redireccionar los mensajes
+de UPD a \textit{updts\_sender}. Estos mensajes no se transmiten directamente
+a esa función para no cargar con más variables al juego de Ta-te-ti y
+mantener su código más limpio. Así el juego sólo necesita mantener los ID
+de los procesos \textit{player\_control} de cada cliente para comunicar
+actualizaciones. Aprovechando esto, se pueden usar estos ID como
+identificadores de cada cliente, ya que serán únicos en todo el cluster de
+servidores.
+
+\subsection*{services.erl}
+Entre las funciones de \textit{services.erl} encontramos a \femph{balance} y
+\femph{pstat}, que juntas se encargan de comunicar en el cluster las cargas
+de cada nodo y decidir qué nodo debe atender el próximo comando entrante de
+un cliente. También se encuentra \femph{players\_names} que se encarga de
+mantener los nombres registrados en el nodo, y, por medio del protocolo 
+descrito en la función, asegurarse de que un nuevo cliente no registre un
+nombre que ya se encuentre en el cluster. \\
+Otro servicio en \textit{services.erl} es \femph{games\_names}. Se encarga
+de mantener la lista de juegos que se están llevando a cabo en el nodo.
+Cuando un cliente requiere los juegos que puede ver u observar, se manda un
+mensaje con \textit{get\_games} a este servicio en todos los nodos, con lo
+cual se recuperan todos los juegos accesibles. Además de mantener los
+nombres de las partidas, mantiene sus estados, lleno o no, para que el
+cliente pueda conocer a cuál puede acceder. Este servicio participa en la
+creación de un juego nuevo, y una partida puede, a través de un mensaje,
+cambiar su estado y borrarse de la lista al finalizar. \\
+Un jugador puede estar conectado a un nodo distinto al que mantiene el juego
+al que accedió, por lo tanto surgió como idea utilizar strings de la forma
+"\{Nombre-Nodo\}+\{PID-Local\}" para identificar partidas. Esto permite que, dado
+un comando destinado a una partida, el mensaje pueda ser dirigido utilizando
+sólo el ID de esta. La entrega del mensaje se realiza por medio del servicio
+\femph{games\_msgs}. Este servicio recibe mensajes de la función
+\textit{pcommand}, y los reenvía al mismo servicio en el nodo donde se
+encuentra la partida, el cual puede dirigir el mensaje a la partida teniendo
+su ID local. S\'olo los mensajes \textit{ACC} deben dirigirse a
+\textit{games\_names} para cerciorarse de que la partida no est\'e llena.
+
+\subsection*{tateti.erl}
+Cuando un cliente pide una nueva partida, se crea un proceso que ejecuta
+\femph{ttt\_phase1}. En esa funci\'on se consulta el nombre del cliente
+y el GID que le ser\'a asignado al juego, y ambos son devueltos como
+respuesta al cliente. Luego el juego pasa a la segunda fase
+(\femph{ttt\_phase2}), donde se espera al segundo jugador. Si el jugador
+no registr\'o un nombre se lo rechaza y se sigue esperando. Si no, se
+prepara todo para la partida y se pasa a la fase 3 (\femph{ttt\_phase3})
+donde se da el juego en s\'i. En cada iteraci\'on de esta fase se reciben
+los mensajes para observar o dejar de observar, se env\'ia una actualizaci\'on
+al jugador que debe jugar y a los observadores, y se espera una jugada del
+cliente requerido. Por cada jugada se analiza si el jugador gan\'o, si hubo
+un empate, o si la jugada fue inv\'alida (en este caso el jugador pierde su
+turno). \\
+En el caso de que alg\'un jugador gane, abandone, o en caso de empate, se
+termina el juego con un \'ultimo \textit{UPD} a los jugadores indicados.
+Este se manda desde la funci\'on \femph{ttt\_end}, y menciona la raz\'on
+por la cual termin\'o el juego, y el ganador en caso de haberlo.
+
+\section*{Sobre el cliente}
+El cliente implementado en \textit{client.erl} es un simple programa de
+consola, con el cual se puede dialogar con el servidor a través de algunos
+comandos, que son una leve abstracción de los que puede manejar el servidor.
+Entre otras cosas, lleva los ID de comandos automáticamente, puede responder
+a las actualizaciones y no necesita que se tipeen los ID de juegos. \\
+Aunque el cliente podría, debido a la implementación del servidor, jugar y
+observar varios juegos a la vez, en este cliente sólo se podrá acceder a 
+sólo un juego hasta que termine. \\
+El cliente se compone de cinco procesos cooperativos:
+\begin{description}
+	\item[connection] Recibe todos los paquetes TCP del servidor y hace un
+	pequeño procesamiento de cada uno para saber a dónde dirigirlo.
+	\item[reader] Es el proceso que lee la entrada del cliente y la entrega
+	a \textit{cmds\_send}.
+	\item[cmds\_send] Procesa los comandos que entra el cliente y los 
+	transforma a comandos que acepta el servidor para mandárselos.
+	\item[games] Lleva la última lista de juegos conocida. Esta se actualiza
+	cada vez que el cliente emite el comando 'juegos'.
+	\item[updt\_recv] Recibe las actualizaciones de los juegos, y se encarga
+	de imprimir mensajes una vez entrado al juego, como el tablero.
+\end{description}
+
+\section*{Posibles mejoras al servidor}
+\begin{itemize}
+	\item Presentar otros ID para los juegos, ya que los actuales revelan
+	mucha información a los clientes, lo cual se puede utilizar para
+	vulnerar el servidor. Entre las soluciones están: encriptar los ID,
+	implementar un nuevo servicio que mantenga una biyección entre estos
+	IDs y los que se presentarían públicamente, cambiar el modelo de IDs
+	a otro distinto, etc.
+	\item Estructurarlo mejor para llegar a un modelo que acepte no sólo
+	el juego Ta-te-ti sino otros juegos basados en turnos (TBS).
+	\item Implementar un sistema de chat.
+	\item Agregar una base de datos que lleve registro de jugadores, 
+	partidas, etc.
+	\item Implementar un cliente con interfaz gráfica.
+	\item Agregar seguridad contra diferentes tipos de ataques por parte
+	de clientes, y mejorar la robustez del código, así el servidor podría
+	escalar mejor mientras se agreguen más jugadores.
+\end{itemize}
+
+
+
+\end{document}
+
