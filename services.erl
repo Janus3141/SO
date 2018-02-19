@@ -96,8 +96,9 @@ players_names(List) ->
                 taken ->
                     Ret ! {error,"NAME TAKEN"};
                 %% Hay un error si un nodo esta conectado pero no
-                %% contesta, en ese caso hay un deadlock, se vuelve
-                %% a intentar luego de un backoff
+                %% contesta, en ese caso hay un deadlock (ambos estan
+                %% esperando la respuesta del otro), se vuelve
+                %% a intentar luego de un backoff arbitrario (menos de 1s)
                 error ->
                     timer:sleep(rand:uniform(1000)),
                     self() ! {add,Name,Ret}
@@ -132,6 +133,7 @@ games_names(List) ->
         {new,Ret,Game} ->
             %% Agrega un nuevo juego a la lista
             case game_to_id(Game) of
+                %% El GID pudo ser generado, se lo comunica al juego
                 {ok, GID} ->
                     Game ! {get_dets,GID},
                     receive
@@ -141,12 +143,13 @@ games_names(List) ->
                         {error,Info} ->
                             Ret ! {error,Info}
                     end;
+                %% El GID no se pudo generar, el juego no se inicia
                 {error,Info} ->
                     Game ! error,
                     Ret ! {error,Info}
             end;
         {cstate,GID,St} ->
-            %% Cambia estado St
+            %% Cambia el estado del juego GID a St
             NewList = lists:keyreplace(GID,1,List,{GID,St}),
             games_names(NewList);
         {del,GID} ->

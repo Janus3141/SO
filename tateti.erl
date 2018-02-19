@@ -35,9 +35,9 @@ ttt_phase2(IdProcP1, NameP1, GID) ->
                     IdProcP2 ! {add, play, GID},
                     Turn = random:uniform(2), % Primer turno
                     TurnS = integer_to_list(Turn),
-                    Ret ! {ok, NameP1 ++ " " ++ NameP2 ++ " " ++ TurnS},
-                    IdProcP1 ! {updt, GID ++ " ACCEPTED " ++ NameP2 ++ " " ++ TurnS},
-                    games ! {cstate, GID, full},
+                    Ret ! {ok, NameP1 ++ " " ++ NameP2 ++ " " ++ TurnS}, % Contestacion al jugador que entra
+                    IdProcP1 ! {updt, GID ++ " ACCEPTED " ++ NameP2 ++ " " ++ TurnS}, % Aviso de comienzo al jugador que crea
+                    games ! {cstate, GID, full}, % Cambia el estado del juego a lleno
                     Tab = [0,0,0,0,0,0,0,0,0], % Tablero de juego vacio
                     ttt_phase3([IdProcP1, IdProcP2], [NameP1, NameP2],
                                Tab, Turn, [], GID, 1);
@@ -101,7 +101,7 @@ ttt_test_table([A1,A2,A3,B1,B2,B3,C1,C2,C3], T) ->
         (A1 =:= T) and (A2 =:= T) and (A3 =:= T) -> {win,[1,2,3]};
         (B1 =:= T) and (B2 =:= T) and (B3 =:= T) -> {win,[4,5,6]};
         (C1 =:= T) and (C2 =:= T) and (C3 =:= T) -> {win,[7,8,9]};
-        (A1 =:= T) and (B1 =:= T) and (C1 =:= T) -> {win,[1,3,7]};
+        (A1 =:= T) and (B1 =:= T) and (C1 =:= T) -> {win,[1,4,7]};
         (A2 =:= T) and (B2 =:= T) and (C2 =:= T) -> {win,[2,5,8]};
         (A3 =:= T) and (B3 =:= T) and (C3 =:= T) -> {win,[3,6,9]};
         (A1 =:= T) and (B2 =:= T) and (C3 =:= T) -> {win,[1,5,9]};
@@ -117,7 +117,7 @@ ttt_phase3(IdProcs,Names,Table,Turn,Wtcs,GID,Count) ->
     Info = string:join(Names, " "),
     {InWtcs,OutWtcs} = watch_list([],[],Info,GID),
     NewWtcs = InWtcs ++ (Wtcs -- OutWtcs),
-    %% Mandar updt a todos
+    %% Mandar updt a todos menos el jugador que hizo la ultima jugada
     TableStr = lists:append([integer_to_list(X) || X <- Table]),
     Info1 = GID ++ " " ++ TableStr ++ " " ++ integer_to_list(Turn),
     updt_bcast(Info1, [lists:nth(Turn,IdProcs) | NewWtcs]),
@@ -154,12 +154,18 @@ ttt_phase3(IdProcs,Names,Table,Turn,Wtcs,GID,Count) ->
 %% Se manda un ultimo update a los jugadores y observadores informando
 %% quien gano y por que
 ttt_end(WinnerN, Players, Wtcs, GID, Reason) ->
+    %% Avisa a games que borre el juego de la lista del servidor
     games ! {del,GID},
+    %% Avisa a los procesos control de los jugadores
+    %% que borren la partida de sus listas
     [Player ! {del,play,GID} || Player <- Players],
     [Watcher ! {del,watch,GID} || Watcher <- Wtcs],
+    %% Lista de clientes a los que se envia ultimo mensaje de la partida
     InfRecs = Players ++ Wtcs,
     case WinnerN of
+        %% Si hubo un empate, WinnerN es false
         false -> WinnerS = "";
+        %% Sino es el numero de jugador
         _ -> WinnerS = integer_to_list(WinnerN)
     end,
     case Reason of

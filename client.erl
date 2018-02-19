@@ -15,7 +15,7 @@ start(IP,Port) ->
                 register(updt_recv, spawn(?MODULE,updates_recv,[])),
                 register(games, spawn(?MODULE, games_ids, [[]])),
                 register(reader, self()),
-                io:format("Tipee 'ayuda' para obtener una lista de los comandos disponibles"),
+                io:format("Tipee 'ayuda' para obtener una lista de los comandos disponibles~n"),
                 read_command();
             {error, Reason} ->
                 io:format("Error: " ++ atom_to_list(Reason) ++ "~n"),

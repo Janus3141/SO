@@ -46,9 +46,13 @@ pcommand(Cmd, PSocket, Updts, Control) ->
                         {Resp,Msge} = answer(GID),
                         {Resp,Msge,ID};
                     ["OK",ID] ->
+                        %% Contestaciones de envios UPD,
+                        %% son redirigidos a updts_sender
                         Updts ! {ok,ID},
                         exit(normal);
                     ["BYE"] ->
+                        %% Primero se obtienen las partidas
+                        %% que se estan jugando y viendo
                         Control ! {qry,play,self()},
                         receive
                             Playing -> Playing
@@ -57,8 +61,11 @@ pcommand(Cmd, PSocket, Updts, Control) ->
                         receive
                             Watching -> Watching
                         end,
+                        %% A cada partida se envia el msj de abandono correspondiente
                         [gmsg ! {play,self(),GID,["LEAVE"],Control} || GID <- Playing],
                         [gmsg ! {unwatch,self(),GID,Control} || GID <- Watching],
+                        %% Si el cliente registro un nombre, debe borrarse
+                        %% del servicio de nombres (players)
                         Control ! {qry,name,self()},
                         receive
                             {ok,Name} ->
@@ -66,11 +73,14 @@ pcommand(Cmd, PSocket, Updts, Control) ->
                             {error,_} ->
                                 ok
                         end,
+                        %% Se interrumpen los servicios que fueron creados
+                        %% para este cliente especificamente
                         [Service ! stop || Service <- [PSocket,Updts,Control]],
                         exit(normal);
                     _ -> {error,"INVALID COMMAND","-1"}
                 end,
     case Res of
+        %% Ultimo formateo de respuestas, listas para enviar
         ok -> PSocket ! {pcmd, "OK " ++ CID ++ " " ++ Msg};
         error -> PSocket ! {pcmd, "ERROR " ++ CID ++ " " ++ Msg}
     end.
@@ -97,7 +107,10 @@ answer(GID) ->
     end.
 
 
-
+%% Recibe la lista de juegos actuales de cada nodo en 'Nodes'
+%% El protocolo es: Si algun nodo no esta respondiendo
+%% (1s de espera), se comprueba que aun este conectado, de lo
+%% contrario se continua con otros nodos que esten faltando
 receive_games([], Games) -> Games;
 receive_games(Nodes, Games) ->
     receive
@@ -125,7 +138,6 @@ receive_games(Nodes, Games) ->
 %% de update al proceso que se encarga de mandarlos, y sirve
 %% como identificador para el cliente (se lo asocia con el
 %% nombre elegido)
-
 player_control(Playing, Watching, Updts, Name) ->
     receive
         {updt,Msg} ->
